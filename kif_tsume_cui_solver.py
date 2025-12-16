@@ -27,19 +27,12 @@ import datetime
 import time
 import hashlib
 
-from pathlib import Path
-
 from paths import (
-    _input_dir,
     _ensure_input_dir,
-    _output_dir,
     _ensure_output_dir,
-    INPUT_DIR,
-    OUTPUT_DIR,
     _resolve_kif_path,
     _resolve_existing_kif_path,
 )
-
 
 import re
 
@@ -1205,7 +1198,7 @@ def enumerate_solution_paths(tree: SolveNode) -> List[List[object]]:
 
 def generate_kif_single_line(board0, hands_b: Dict[str,int], gote_hands_auto: Dict[str,int],
                              sente_name: str, gote_name: str, moves: List[object], outfile: str,
-                             seen: Optional[Dict[str,str]] = None) -> Optional[Path]:
+                             seen: Optional[Dict[str,str]] = None) -> Optional[pathlib.Path]:
     """Write a single-line KIF (no variations). If seen is given, skip identical outputs."""
     header: List[str] = []
     header.append("# ---- Kifu for Mac V0.53 夢の詰将棋メーカー by CUI ----")
@@ -1244,7 +1237,7 @@ def generate_kif_single_line(board0, hands_b: Dict[str,int], gote_hands_auto: Di
     if seen is not None:
         key = hashlib.sha1(text.encode("cp932", errors="replace")).hexdigest()
         if key in seen:
-            prev = Path(seen[key]).name
+            prev = pathlib.Path(seen[key]).name
             print(f"[dedup] {outp.name} は {prev} と同一なので省略")
             return None
         seen[key] = str(outp)
@@ -1886,8 +1879,8 @@ def main():
                 # Write each solution line to separate KIF files under OUTPUT/
                 board0 = shogi.Board(sfen)
                 paths = enumerate_solution_paths(tree_out)
-                stem = Path(out).stem
-                written: List[Path] = []
+                stem = pathlib.Path(out).stem
+                written: List[str] = []
                 if not paths:
                     print("[solve] 解答筋がありません")
                 else:
