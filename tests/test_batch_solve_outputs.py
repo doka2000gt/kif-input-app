@@ -5,27 +5,43 @@ import shutil
 
 def import_solver_from_tmp(tmp_path: Path):
     """
-    テスト用に solver スクリプトを tmp にコピーして import する。
+    テスト用に solver と paths を tmp にコピーして import する。
     __file__ が tmp を指すので、OUTPUT/INPUT も tmp 配下になり安全。
     """
     import sys
-    root = Path(__file__).resolve().parents[1]  # project root
-    src = root / "kif_tsume_cui_solver.py"
-    assert src.exists(), f"not found: {src}"
-    dst = tmp_path / "kif_tsume_cui_solver.py"
-    shutil.copy2(src, dst)
+    import shutil
+    import importlib.util
 
+    root = Path(__file__).resolve().parents[1]  # project root
+
+    # 1) solver と paths を tmp にコピー
+    src_solver = root / "kif_tsume_cui_solver.py"
+    src_paths  = root / "paths.py"
+    assert src_solver.exists(), f"not found: {src_solver}"
+    assert src_paths.exists(),  f"not found: {src_paths}"
+
+    dst_solver = tmp_path / "kif_tsume_cui_solver.py"
+    dst_paths  = tmp_path / "paths.py"
+    shutil.copy2(src_solver, dst_solver)
+    shutil.copy2(src_paths,  dst_paths)
+
+    # 2) tmp を import 検索パス先頭に入れる（paths を解決するため）
+    sys.path.insert(0, str(tmp_path))
+
+    # 3) solver を import
     module_name = "solver_under_test"
-    spec = importlib.util.spec_from_file_location(module_name, dst)
+    spec = importlib.util.spec_from_file_location(module_name, dst_solver)
     assert spec and spec.loader
 
     mod = importlib.util.module_from_spec(spec)
 
-    # ★重要：dataclass が型注釈文字列を解決する時に sys.modules を参照するため、先に登録する
+    # ★重要：dataclass の型注釈文字列解決のため先に登録
     sys.modules[module_name] = mod
 
     spec.loader.exec_module(mod)
     return mod
+
+
 
 def list_output_files(mod, stem: str):
     outdir = mod._ensure_output_dir()
