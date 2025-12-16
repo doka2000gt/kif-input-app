@@ -1,0 +1,241 @@
+--- a/kif_tsume_cui_solver.py
++++ b/kif_tsume_cui_solver.py
+@@ -1,6 +1,7 @@
+ #!/usr/bin/env python3
+ # -*- coding: utf-8 -*-
++from __future__ import annotations
+ """
+ kif_tsume_cui_solver.py
+  - CUI KIF editor for tsume shogi
+@@ -20,6 +21,28 @@
+ from pathlib import Path
+ import time
++import shutil
++import sys
++
++# ------------------------------------------------------------
++# Paths (INPUT/OUTPUT)
++# ------------------------------------------------------------
++BASE_DIR = Path(__file__).resolve().parent
++INPUT_DIR = BASE_DIR / "INPUT"
++OUTPUT_DIR = BASE_DIR / "OUTPUT"
++
++# auto-create folders
++INPUT_DIR.mkdir(exist_ok=True)
++OUTPUT_DIR.mkdir(exist_ok=True)
++
++# default search ply for batch (odd number recommended: 1/3/5/7/9...)
++DEFAULT_BATCH_PLY = 9
++
++def _ensure_inout_dirs() -> None:
++    """Ensure INPUT/OUTPUT directories exist (safe to call repeatedly)."""
++    INPUT_DIR.mkdir(exist_ok=True)
++    OUTPUT_DIR.mkdir(exist_ok=True)
+
+@@
+-# (既存のOUTPUT解決関数がある前提)
++# ------------------------------------------------------------
++# OUTPUT path resolver
++# ------------------------------------------------------------
+ def _resolve_kif_path(filename: str) -> Path:
+-    # 既存実装: OUTPUTフォルダに保存する
+-    return Path(OUTPUT_DIR) / filename
++    # Always save into OUTPUT/
++    _ensure_inout_dirs()
++    return OUTPUT_DIR / filename
+
+@@
++# ============================================================
++# Batch processing (NO recursion)
++# ============================================================
++def _batch_process_one(
++    kif_path: Path,
++    ply: int,
++    *,
++    sente: str,
++    gote: str,
++) -> int:
++    """
++    Process one .kif file.
++    - If it contains '変化：' blocks: split them to separate files (stem.kif + stem_002.kif ...)
++    - Else: try to read initial position and solve (enumerate multiple mate lines) and write:
++        stem.kif (+ stem_002.kif ... if multiple)
++      If cannot parse: copy original to OUTPUT/stem.kif
++    Returns: number of output files written (>=1).
++    """
++    try:
++        raw = kif_path.read_text(encoding="cp932", errors="replace")
++    except Exception:
++        raw = kif_path.read_text(encoding="utf-8", errors="replace")
++
++    stem = kif_path.stem
++
++    # 1) If already has variations, split by variations (no re-solve)
++    if "変化：" in raw:
++        # existing helper (assumed): parse_kif_variations(raw) -> List[List[str]] of move-lines per branch
++        # If you already implemented variation splitter, call it here.
++        branches = parse_kif_variations(raw)  # must return list of move-lists, first is main
++        if not branches:
++            # fallback: copy
++            outp = _resolve_kif_path(f"{stem}.kif")
++            outp.write_bytes(raw.encode("cp932", errors="replace"))
++            return 1
++
++        # write main first (no suffix), then _002...
++        n_written = 0
++        for idx, mvlist in enumerate(branches, start=1):
++            if idx == 1:
++                outname = f"{stem}.kif"
++            else:
++                outname = f"{stem}_{idx:03d}.kif"  # 002, 003...
++            # existing helper (assumed): write_branch_kif(raw_header, mvlist, outname)
++            write_branch_kif(raw, mvlist, outname, sente=sente, gote=gote)
++            n_written += 1
++        return n_written
++
++    # 2) No variations: try to parse initial position, then solve
++    try:
++        # existing helper (assumed): kif_to_start_snapshot(raw) -> (board_map, hands_b, stm, gote_auto, sfen)
++        start_snapshot = kif_to_start_snapshot(raw)
++    except Exception:
++        # cannot parse -> copy original to OUTPUT
++        outp = _resolve_kif_path(f"{stem}.kif")
++        outp.write_bytes(raw.encode("cp932", errors="replace"))
++        return 1
++
++    # start_snapshot expected to give you SFEN already
++    board_map, hands_b, stm, gote_auto, sfen = start_snapshot
++
++    if not HAS_PYSHOGI:
++        # No python-shogi -> just copy
++        outp = _resolve_kif_path(f"{stem}.kif")
++        outp.write_bytes(raw.encode("cp932", errors="replace"))
++        return 1
++
++    b = shogi.Board(sfen)
++    attacker_turn = b.turn
++
++    # limits: reuse existing SolveLimits class (must exist). If not, create simple one.
++    limits = SolveLimits(max_nodes=50000, max_time_sec=5.0, max_solutions=300)
++    stats = {"nodes": 0, "cutoff": False, "start": time.perf_counter(), "solutions": 0}
++
++    tree = solve_mate_tree(
++        b,
++        ply_left=ply,
++        attacker_turn=attacker_turn,
++        check_only=True,
++        memo={},
++        stats=stats,
++        limits=limits,
++    )
++    if tree is None or not getattr(tree, "children", None):
++        # no solutions -> still output original as-is to OUTPUT
++        outp = _resolve_kif_path(f"{stem}.kif")
++        outp.write_bytes(raw.encode("cp932", errors="replace"))
++        return 1
++
++    tree_out = prune_tree_to_max_leaves(tree, 300)
++    paths = enumerate_solution_paths(tree_out)
++    if not paths:
++        outp = _resolve_kif_path(f"{stem}.kif")
++        outp.write_bytes(raw.encode("cp932", errors="replace"))
++        return 1
++
++    board0 = shogi.Board(sfen)
++
++    # main line: stem.kif, others: stem_002.kif...
++    generate_kif_single_line(board0, hands_b, gote_auto, sente, gote, paths[0], f"{stem}.kif")
++    for i_line, mvlist in enumerate(paths[1:], start=2):
++        generate_kif_single_line(board0, hands_b, gote_auto, sente, gote, mvlist, f"{stem}_{i_line:03d}.kif")
++    return len(paths)
++
++
++def _cmd_batch(argline: str, *, sente: str, gote: str) -> None:
++    """
++    batch
++      - default: process all .kif in INPUT/
++    batch 9
++      - process all .kif in INPUT/ with ply=9
++    batch INPUT 9
++      - process all .kif in INPUT folder with ply=9
++    batch some.kif 3
++      - process one kif with ply=3
++    """
++    _ensure_inout_dirs()
++    parts = argline.split()
++    # parts includes 'batch' itself
++    args = parts[1:]
++
++    target: Path
++    ply = DEFAULT_BATCH_PLY
++
++    if len(args) == 0:
++        target = INPUT_DIR
++    elif len(args) == 1:
++        if args[0].isdigit():
++            target = INPUT_DIR
++            ply = int(args[0])
++        else:
++            target = Path(args[0])
++    else:
++        target = Path(args[0])
++        if args[1].isdigit():
++            ply = int(args[1])
++
++    if ply <= 0:
++        print("[batch] ply は正の整数で指定してください（例: batch 9）")
++        return
++
++    if target.is_dir():
++        kifs = sorted(target.glob("*.kif"))
++        print(f"[batch] {target} 内の {len(kifs)} ファイルを処理します（ply={ply}）")
++        total_out = 0
++        for kp in kifs:
++            try:
++                n = _batch_process_one(kp, ply, sente=sente, gote=gote)
++                total_out += n
++                if n == 1:
++                    print(f"[batch] {kp.name} -> 1 本")
++                else:
++                    print(f"[batch] {kp.name} -> {n} 本（分岐/探索）")
++            except Exception as e:
++                print(f"[batch] エラー: {kp.name}: {e}")
++        print(f"[batch] 完了: OUTPUT に {total_out} ファイルを書き出しました")
++        return
++
++    # single file
++    if target.exists():
++        n = _batch_process_one(target, ply, sente=sente, gote=gote)
++        print(f"[batch] {target.name} -> {n} 本を書き出しました（OUTPUT）")
++        return
++
++    # fallback: if user typed "batch INPUT" but folder doesn't exist (should be auto-created)
++    print(f"[batch] 対象が見つかりません: {target}")
++    print("形式: batch [dir|file.kif|ply] [ply]")
++    print("  例: batch            # INPUT 内を一括処理")
++    print("      batch 9          # INPUT 内を 9 手で一括処理")
++    print("      batch INPUT 9    # INPUT フォルダを 9 手で一括処理")
++    print("      batch some.kif 3 # 単体KIFを 3 手で探索/分割")
++
+@@
+ def main():
+@@
+     while True:
+         s = input("▲ ").strip()
+@@
++        # ----------------------------------------------------
++        # batch command (default INPUT)
++        # ----------------------------------------------------
++        if s == "batch" or s.startswith("batch "):
++            try:
++                _cmd_batch(s, sente=sente, gote=gote)
++            except Exception as e:
++                print(f"[batch] エラー: {e}")
++                print("形式: batch [dir|file.kif|ply] [ply]")
++                print("  例: batch            # INPUT 内を一括処理")
++                print("      batch 9          # INPUT 内を 9 手で一括処理")
++                print("      batch INPUT 9    # INPUT フォルダを 9 手で一括処理")
++                print("      batch some.kif 3 # 単体KIFを 3 手で探索/分割")
++            continue
++
+         # ... (既存コマンド群)
