@@ -21,24 +21,28 @@ def import_solver_from_tmp(tmp_path: Path):
     src_constants = root / "constants.py"
     src_models    = root / "models.py"
     src_helpers = root / "helpers.py"
+    src_kif_format = root / "kif_format.py"
 
     assert src_solver.exists(),    f"not found: {src_solver}"
     assert src_paths.exists(),     f"not found: {src_paths}"
     assert src_constants.exists(), f"not found: {src_constants}"
     assert src_models.exists(),    f"not found: {src_models}"
     assert src_helpers.exists(), f"not found: {src_helpers}"
+    assert src_kif_format.exists()
 
     dst_solver    = tmp_path / "kif_tsume_cui_solver.py"
     dst_paths     = tmp_path / "paths.py"
     dst_constants = tmp_path / "constants.py"
     dst_models    = tmp_path / "models.py"
     dst_helpers = tmp_path / "helpers.py"
+    dst_kif_format = tmp_path / "kif_format.py"
 
     shutil.copy2(src_solver,    dst_solver)
     shutil.copy2(src_paths,     dst_paths)
     shutil.copy2(src_constants, dst_constants)
     shutil.copy2(src_models,    dst_models)
     shutil.copy2(src_helpers, dst_helpers)
+    shutil.copy2(src_kif_format, dst_kif_format)
 
     # 2) tmp を import 検索パス先頭に入れる（paths を解決するため）
     sys.path.insert(0, str(tmp_path))
