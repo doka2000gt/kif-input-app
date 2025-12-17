@@ -19,8 +19,8 @@ Notes:
 - We intentionally focus on tsume usage. "Hirate" etc. can be added later as separate modes.
 """
 
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+from models import Piece, Move, SolveNode, SolveLimits
 import copy
 import json
 import pathlib
@@ -37,6 +37,8 @@ from constants import (
     TOTAL_COUNTS,
     KIND_TO_PYO,
 )
+
+from models import Piece, Move, SolveNode, SolveLimits
 
 from paths import (
     _ensure_input_dir,
@@ -140,28 +142,6 @@ def inv_count_kanji(n: int) -> str:
         10:"十",11:"十一",12:"十二",13:"十三",14:"十四",15:"十五",16:"十六",17:"十七",18:"十八"
     }
     return inv.get(n, str(n))
-
-# ----------------- model -----------------
-
-@dataclass
-class Piece:
-    color: str  # "B" (sente) or "W" (gote)
-    kind: str   # "P,L,N,S,G,B,R,K"
-    prom: bool = False
-
-    def display_name(self) -> str:
-        if self.prom and self.kind in PROMOTED_JP:
-            return PROMOTED_JP[self.kind]
-        return PIECE_JP[self.kind]
-
-@dataclass
-class Move:
-    is_drop: bool
-    kind: str
-    from_sq: Optional[Tuple[int,int]]
-    to_sq: Tuple[int,int]
-    promote: bool
-    same_as_prev: bool
 
 class ShogiPosition:
     def __init__(self):
@@ -942,22 +922,9 @@ def batch_process_path(path: str, default_ply: Optional[int] = None,
     else:
         written_all.extend(batch_process_kif(str(p), default_ply=default_ply, limits=limits, check_only=check_only))
     return written_all
-# ----------------- Solve (python-shogi) -----------------
-
-@dataclass
-class SolveNode:
-    move: Optional[object]  # shogi.Move or None for root
-    children: List["SolveNode"]
 
 def _is_attacker_turn(board, attacker_turn: int) -> bool:
     return board.turn == attacker_turn
-
-
-@dataclass
-class SolveLimits:
-    max_nodes: int = 50000
-    max_time_sec: float = 5.0
-    max_solutions: int = 300
 
 def solve_mate_tree(board, ply_left: int, attacker_turn: int, check_only: bool = True,
                     memo: Optional[Dict[Tuple[str,int], Optional[SolveNode]]] = None,
