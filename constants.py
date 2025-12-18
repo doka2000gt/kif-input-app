@@ -20,3 +20,11 @@ KIND_TO_PYO = {
     ("P",True):"と", ("L",True):"成香", ("N",True):"成桂", ("S",True):"成銀",
     ("B",True):"馬", ("R",True):"竜",
 }
+
+PIECE_LEGEND = (
+    "駒トークン:\n"
+    "  P=歩  L=香  N=桂  S=銀  G=金  B=角  R=飛  K=玉\n"
+    "  +P=と  +L=成香  +N=成桂  +S=成銀  +B=馬  +R=竜\n"
+    "  vP=後手歩  v+R=後手竜  .=消去"
+)
+

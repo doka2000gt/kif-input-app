@@ -27,6 +27,7 @@ import pathlib
 import datetime
 import time
 import hashlib
+import os
 
 from constants import (
     FW_DIGITS,
@@ -36,6 +37,7 @@ from constants import (
     PROMOTABLE,
     TOTAL_COUNTS,
     KIND_TO_PYO,
+    PIECE_LEGEND,
 )
 
 from paths import (
@@ -95,7 +97,11 @@ from batch_runner import (
     batch_process_path,
 )
 
-from sfen import compute_gote_remaining, snapshot_to_sfen
+from sfen import (
+    compute_gote_remaining,
+    snapshot_to_sfen,
+    sfen_to_snapshot,   # 使っているなら
+)
 
 
 import re
@@ -107,102 +113,6 @@ try:
 except Exception:
     shogi = None
     HAS_PYSHOGI = False
-
-# ----------------- SFEN building & gote-remaining hands -----------------
-def board_to_sfen(board_map: Dict[Tuple[int,int], Optional[Piece]]) -> str:
-    # ranks 1..9 correspond to a..i (top to bottom)
-    rows = []
-    for r in range(1,10):
-        empties = 0
-        row = ""
-        for f in range(9,0,-1):
-            p = board_map[(f,r)]
-            if p is None:
-                empties += 1
-                continue
-            if empties:
-                row += str(empties)
-                empties = 0
-            ch = p.kind
-            if p.prom:
-                row += "+"
-            row += ch if p.color == "B" else ch.lower()
-        if empties:
-            row += str(empties)
-        rows.append(row)
-    return "/".join(rows)
-
-def snapshot_to_sfen(board_map, hands_b, side_to_move: str, gote_hands_auto: Dict[str,int]) -> str:
-    board_part = board_to_sfen(board_map)
-    turn = "b" if side_to_move == "B" else "w"
-    hands_part = hands_to_sfen(hands_b, gote_hands_auto)
-    return f"{board_part} {turn} {hands_part} 1"
-
-
-# ----------------- Start-position save/load & KIF preview -----------------
-def sfen_to_snapshot(sfen: str):
-    """Parse SFEN into (board_map, hands_b, side_to_move). Ignores gote hands (we auto-compute)."""
-    parts = sfen.strip().split()
-    if len(parts) < 3:
-        raise ValueError("SFEN形式が不正です")
-    board_part, turn_part, hands_part = parts[0], parts[1], parts[2]
-
-    # board
-    board_map: Dict[Tuple[int,int], Optional[Piece]] = {(f,r):None for f in range(1,10) for r in range(1,10)}
-    rows = board_part.split("/")
-    if len(rows) != 9:
-        raise ValueError("SFEN盤面の段数が不正です")
-    for r_idx, row in enumerate(rows, start=1):  # r=1..9
-        f = 9
-        i = 0
-        while i < len(row):
-            ch = row[i]
-            if ch.isdigit():
-                n = int(ch)
-                f -= n
-                i += 1
-                continue
-            prom = False
-            if ch == "+":
-                prom = True
-                i += 1
-                ch = row[i]
-            color = "B" if ch.isupper() else "W"
-            kind = ch.upper()
-            if kind not in PIECE_JP:
-                raise ValueError("SFEN駒種が不正です")
-            board_map[(f, r_idx)] = Piece(color=color, kind=kind, prom=prom)
-            f -= 1
-            i += 1
-        if f != 0:
-            # f should end at 0 after filling 9 files
-            pass
-
-    side_to_move = "B" if turn_part == "b" else "W"
-
-    # hands (black only)
-    hands_b: Dict[str,int] = {}
-    if hands_part != "-":
-        i = 0
-        while i < len(hands_part):
-            # count may be multiple digits
-            if hands_part[i].isdigit():
-                j = i
-                while j < len(hands_part) and hands_part[j].isdigit():
-                    j += 1
-                cnt = int(hands_part[i:j])
-                pch = hands_part[j]
-                i = j + 1
-            else:
-                cnt = 1
-                pch = hands_part[i]
-                i += 1
-            if pch.isupper():
-                k = pch
-                if k in PIECE_JP and k != "K":
-                    hands_b[k] = hands_b.get(k, 0) + cnt
-            # lowercase (gote) is ignored because we auto-compute at output
-    return board_map, hands_b, side_to_move
 
 def save_startpos_file(filename: str, board_map, hands_b, side_to_move: str, sente: str, gote: str):
     gote_auto = compute_gote_remaining(board_map, hands_b)
@@ -242,8 +152,13 @@ def preview_kif_file(filename: str, max_lines: int = 120):
     if len(lines) > n:
         print(f"...（残り {len(lines)-n} 行）")
 
+def clear_screen() -> None:
+    # Windows: cls / macOS+Linux: clear
+    os.system("cls" if os.name == "nt" else "clear")
+
 # ----------------- Main -----------------
 def main():
+    clear_screen()
     pos = ShogiPosition()
     start_snapshot = None  # (board, hands_b, side_to_move)
     last_piece_token: Optional[str] = None
@@ -261,6 +176,7 @@ def main():
         print(pos.board_to_piyo())
         print(f"先手の持駒：{pos.hands_to_piyo('B')}")
         print("ガイド: help solve / p 55 / h b P 2 / turn b / start / 7776 / 076 / s out.kif / solve 9 out.kif\n")
+        print(PIECE_LEGEND)
 
     while True:
         prompt = "▲ " if pos.side_to_move == "B" else "△ "
@@ -270,6 +186,21 @@ def main():
 
         if s == "q":
             break
+
+        if s in ("new", "reset"):
+            pos.clear_all()
+            start_snapshot = None
+            last_piece_token = None
+            end_result = None
+
+            # 名前もリセットしたいなら（任意）
+            ans = input("先手/後手名もリセットしますか？ (y/N): ").strip().lower()
+            if ans == "y":
+                sente = input("先手名（Enterで先手）: ").strip() or ""
+                gote  = input("後手名（Enterで後手）: ").strip() or ""
+
+            print("OK: 新しい局面入力を開始します（p/h/turn → start）")
+            continue
 
         if s.startswith("help"):
             t = s.split()
@@ -549,9 +480,9 @@ def main():
                     out += ".kif"
 
             # defaults
-            maxnodes = 50000
-            maxtime = 5.0
-            maxsol = 300
+            maxnodes = 2000000
+            maxtime = 120
+            maxsol = 20000
 
             # flags
             while i < len(t):
