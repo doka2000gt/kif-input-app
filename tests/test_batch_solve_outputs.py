@@ -26,6 +26,9 @@ def import_solver_from_tmp(tmp_path: Path):
     src_manual_kif = root / "manual_kif.py"
     src_help_texts = root / "help_texts.py"
     src_solver_core = root / "solver_core.py"
+    src_kif_parser = root / "kif_parser.py"
+    src_batch_runner = root / "batch_runner.py"
+    src_sfen = root / "sfen.py"
 
     assert src_solver.exists(),    f"not found: {src_solver}"
     assert src_paths.exists(),     f"not found: {src_paths}"
@@ -37,6 +40,9 @@ def import_solver_from_tmp(tmp_path: Path):
     assert src_manual_kif.exists(), f"not found: {src_manual_kif}"
     assert src_help_texts.exists(), f"not found: {src_help_texts}"
     assert src_solver_core.exists(), f"not found: {src_solver_core}"
+    assert src_kif_parser.exists(), f"not found: {src_kif_parser}"
+    assert src_batch_runner.exists(), f"not found: {src_batch_runner}"
+    assert src_sfen.exists(), f"not found: {src_sfen}"
 
     dst_solver    = tmp_path / "kif_tsume_cui_solver.py"
     dst_paths     = tmp_path / "paths.py"
@@ -48,6 +54,9 @@ def import_solver_from_tmp(tmp_path: Path):
     dst_manual_kif = tmp_path / "manual_kif.py"
     dst_help_texts = tmp_path / "help_texts.py"
     dst_solver_core = tmp_path / "solver_core.py"
+    dst_kif_parser = tmp_path / "kif_parser.py"
+    dst_batch_runner = tmp_path / "batch_runner.py"
+    dst_sfen      = tmp_path / "sfen.py"
 
     shutil.copy2(src_solver,    dst_solver)
     shutil.copy2(src_paths,     dst_paths)
@@ -59,6 +68,9 @@ def import_solver_from_tmp(tmp_path: Path):
     shutil.copy2(src_manual_kif, dst_manual_kif)
     shutil.copy2(src_help_texts, dst_help_texts)
     shutil.copy2(src_solver_core, dst_solver_core)
+    shutil.copy2(src_kif_parser, dst_kif_parser)
+    shutil.copy2(src_batch_runner, dst_batch_runner)
+    shutil.copy2(src_sfen, dst_sfen)
 
     # 2) tmp を import 検索パス先頭に入れる（paths を解決するため）
     sys.path.insert(0, str(tmp_path))
