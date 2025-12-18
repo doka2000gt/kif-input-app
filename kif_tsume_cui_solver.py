@@ -61,16 +61,26 @@ from kif_format import (
     kif_line_for_shogi_move,
     board0_to_piyo,
     _hands_to_line,
-    _board_map_to_piyo,
-    _kif_line_for_minimal_move,
-    _apply_minimal_to_tmp,
     generate_kif_single_line,
     generate_kif_with_variations,
     build_mainline_and_variations,
     emit_lines_for_branch,
 )
 
+from manual_kif import (
+    board_map_to_piyo,
+    kif_line_for_minimal_move,
+    apply_minimal_to_tmp,
+)
+
 from position import ShogiPosition
+
+from manual_kif import (
+    board_map_to_piyo,
+    kif_line_for_minimal_move,
+    apply_minimal_to_tmp,
+)
+
 
 import re
 

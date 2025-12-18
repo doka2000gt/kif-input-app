@@ -129,56 +129,6 @@ def board0_to_piyo(board0) -> str:
     return "\n".join(lines)
 
 
-def _board_map_to_piyo(board_map: Dict[Tuple[int, int], Optional[Piece]]) -> str:
-    lines = []
-    lines.append("  ９ ８ ７ ６ ５ ４ ３ ２ １")
-    lines.append("+---------------------------+")
-    for r in range(1, 10):
-        row = []
-        for f in range(9, 0, -1):
-            p = board_map[(f, r)]
-            if p is None:
-                row.append(" ・")
-            else:
-                name = KIND_TO_PYO.get((p.kind, p.prom), PIECE_JP[p.kind])
-                cell = ("v" + name) if p.color == "W" else (" " + name)
-                row.append(cell)
-        lines.append("|" + "".join(row) + f"|{RANK_KANJI[r]}")
-    lines.append("+---------------------------+")
-    return "\n".join(lines)
-
-
-def _kif_line_for_minimal_move(idx: int, board_map, mv: Move, prev_to, sec: int, total_sec: int):
-    dst = "同" if (prev_to is not None and prev_to == mv.to_sq) else sq_to_kif(*mv.to_sq)
-    if mv.is_drop:
-        body = f"{dst}{PIECE_JP[mv.kind]}打"
-    else:
-        name = PIECE_JP[mv.kind] + ("成" if mv.promote else "")
-        body = f"{dst}{name}{sq_to_paren(*mv.from_sq)}"
-    time_part = f"( 0:{sec:02d}/00:00:{total_sec:02d})"
-    line = f"{idx:4d} {body:<12} {time_part}"
-    return line, mv.to_sq
-
-
-def _apply_minimal_to_tmp(board_map, hands, side, mv: Move):
-    if mv.is_drop:
-        if mv.kind in hands[side]:
-            hands[side][mv.kind] -= 1
-            if hands[side][mv.kind] <= 0:
-                del hands[side][mv.kind]
-        board_map[mv.to_sq] = Piece(side, mv.kind, False)
-    else:
-        p = board_map[mv.from_sq]
-        dest = board_map[mv.to_sq]
-        if dest is not None:
-            hands[side][dest.kind] = hands[side].get(dest.kind, 0) + 1
-        board_map[mv.from_sq] = None
-        np = copy.deepcopy(p)
-        if mv.promote:
-            np.prom = True
-        board_map[mv.to_sq] = np
-
-
 def generate_kif_single_line(board0, hands_b: Dict[str,int], gote_hands_auto: Dict[str,int],
                              sente_name: str, gote_name: str, moves: List[object], outfile: str,
                              seen: Optional[Dict[str,str]] = None) -> Optional[pathlib.Path]:

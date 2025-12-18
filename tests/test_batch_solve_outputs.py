@@ -23,6 +23,7 @@ def import_solver_from_tmp(tmp_path: Path):
     src_helpers = root / "helpers.py"
     src_kif_format = root / "kif_format.py"
     src_position = root / "position.py"
+    src_manual_kif = root / "manual_kif.py"
 
     assert src_solver.exists(),    f"not found: {src_solver}"
     assert src_paths.exists(),     f"not found: {src_paths}"
@@ -31,6 +32,7 @@ def import_solver_from_tmp(tmp_path: Path):
     assert src_helpers.exists(), f"not found: {src_helpers}"
     assert src_kif_format.exists(), f"not found: {src_kif_format}"
     assert src_position.exists(), f"not found: {src_position}"
+    assert src_manual_kif.exists(), f"not found: {src_manual_kif}"
 
     dst_solver    = tmp_path / "kif_tsume_cui_solver.py"
     dst_paths     = tmp_path / "paths.py"
@@ -39,6 +41,7 @@ def import_solver_from_tmp(tmp_path: Path):
     dst_helpers = tmp_path / "helpers.py"
     dst_kif_format = tmp_path / "kif_format.py"
     dst_position = tmp_path / "position.py"
+    dst_manual_kif = tmp_path / "manual_kif.py"
 
     shutil.copy2(src_solver,    dst_solver)
     shutil.copy2(src_paths,     dst_paths)
@@ -47,6 +50,7 @@ def import_solver_from_tmp(tmp_path: Path):
     shutil.copy2(src_helpers, dst_helpers)
     shutil.copy2(src_kif_format, dst_kif_format)
     shutil.copy2(src_position, dst_position)
+    shutil.copy2(src_manual_kif, dst_manual_kif)
 
     # 2) tmp を import 検索パス先頭に入れる（paths を解決するため）
     sys.path.insert(0, str(tmp_path))
