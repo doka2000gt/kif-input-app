@@ -255,83 +255,128 @@ def main():
         # p command
         if s.startswith("p "):
             t = s.split()
-            if len(t) not in (2,3):
-                print("形式: p 55 v+R  / p 55 .  / p 55(メニュー)")
-                continue
-            sq = t[1]
-            if not re.fullmatch(r"[1-9][1-9]", sq):
-                print("マスは 11〜99")
-                continue
-            f = int(sq[0]); r = int(sq[1])
 
-            if len(t) == 3:
-                tok = t[2].strip()
+            def _apply_one_p(sq_str: str, tok_str: str) -> None:
+                nonlocal last_piece_token
+                if not re.fullmatch(r"[1-9][1-9]", sq_str):
+                    raise ValueError(f"マスは 11〜99: {sq_str}")
+                f = int(sq_str[0]); r = int(sq_str[1])
+                tok = tok_str.strip()
+                p = parse_piece_token(tok)
+                pos.set_piece((f, r), p)
+                if tok != ".":
+                    last_piece_token = tok
+
+            # ---- case 1: menu (p 55) ----
+            if len(t) == 2:
+                sq = t[1]
+                if not re.fullmatch(r"[1-9][1-9]", sq):
+                    print("マスは 11〜99")
+                    continue
+                f = int(sq[0]); r = int(sq[1])
+
+                cur = pos.board[(f, r)]
+                cur_label = "・" if cur is None else (("△" if cur.color == "W" else "▲") + KIND_TO_PYO.get((cur.kind, cur.prom), PIECE_JP[cur.kind]))
+                print(f"[{f}{r}] 現在: {cur_label}")
+
+                menu = build_piece_menu(prefer_side=pos.side_to_move)
+                for i, (tok, label) in enumerate(menu, start=1):
+                    mark = " *" if (last_piece_token is not None and tok == last_piece_token) else ""
+                    print(f"{i:2d}) {label}{mark}")
+                if last_piece_token is not None:
+                    print("0) 直前の駒で置く")
+
+                sel = input("選択: ").strip()
                 try:
-                    p = parse_piece_token(tok)
-                    pos.set_piece((f,r), p)
-                    if tok != ".":
-                        last_piece_token = tok
+                    if sel == "0":
+                        if last_piece_token is None:
+                            raise ValueError("直前の駒がありません")
+                        tok = last_piece_token
+                    else:
+                        if not sel.isdigit():
+                            raise ValueError("番号で選んでください")
+                        n = int(sel)
+                        if not (1 <= n <= len(menu)):
+                            raise ValueError("番号が範囲外です")
+                        tok = menu[n - 1][0]
+
+                    # atomic: menu操作も巻き戻せるようにする
+                    snap = pos.clone_state()
+                    try:
+                        if tok == ".":
+                            pos.set_piece((f, r), None)
+                        else:
+                            p = parse_piece_token(tok)
+                            pos.set_piece((f, r), p)
+                            last_piece_token = tok
+                    except Exception:
+                        pos.board, pos.hands, pos.side_to_move, pos.moves = snap
+                        raise
+
                     print("OK")
                 except Exception as e:
                     print(f"エラー: {e}")
                 continue
 
-            # menu
-            cur = pos.board[(f,r)]
-            cur_label = "・" if cur is None else (("△" if cur.color=="W" else "▲") + KIND_TO_PYO.get((cur.kind, cur.prom), PIECE_JP[cur.kind]))
-            print(f"[{f}{r}] 現在: {cur_label}")
+            # ---- case 2/3: direct single or multi ----
+            # single: p 55 v+R
+            # multi : p 72 vK 74 P 64 G  (pairs)
+            if len(t) == 3:
+                snap = pos.clone_state()
+                try:
+                    _apply_one_p(t[1], t[2])
+                    print("OK")
+                except Exception as e:
+                    pos.board, pos.hands, pos.side_to_move, pos.moves = snap
+                    print(f"エラー: {e}")
+                continue
 
-            menu = build_piece_menu(prefer_side=pos.side_to_move)
-            for i, (tok, label) in enumerate(menu, start=1):
-                mark = " *" if (last_piece_token is not None and tok == last_piece_token) else ""
-                print(f"{i:2d}) {label}{mark}")
-            if last_piece_token is not None:
-                print("0) 直前の駒で置く")
+            # multi pairs: (sq tok)...
+            if len(t) >= 3 and (len(t) - 1) % 2 == 0:
+                snap = pos.clone_state()
+                try:
+                    pairs = t[1:]
+                    for sq_str, tok_str in zip(pairs[0::2], pairs[1::2]):
+                        _apply_one_p(sq_str, tok_str)
+                    print("OK")
+                except Exception as e:
+                    # atomic rollback
+                    pos.board, pos.hands, pos.side_to_move, pos.moves = snap
+                    print(f"エラー: {e}")
+                continue
 
-            sel = input("選択: ").strip()
-            try:
-                if sel == "0":
-                    if last_piece_token is None:
-                        raise ValueError("直前の駒がありません")
-                    tok = last_piece_token
-                else:
-                    if not sel.isdigit():
-                        raise ValueError("番号で選んでください")
-                    n = int(sel)
-                    if not (1 <= n <= len(menu)):
-                        raise ValueError("番号が範囲外です")
-                    tok = menu[n-1][0]
-
-                if tok == ".":
-                    pos.set_piece((f,r), None)
-                else:
-                    p = parse_piece_token(tok)
-                    pos.set_piece((f,r), p)
-                    last_piece_token = tok
-                print("OK")
-            except Exception as e:
-                print(f"エラー: {e}")
+            print("形式: p 55 / p 55 v+R / p 72 vK 74 P 64 G / p 55(メニュー)")
             continue
 
         # hand edit
         if s.startswith("h "):
             t = s.split()
-            if len(t) != 4 or t[1] not in ("b","w"):
-                print("形式: h b P 2   / h w R 1")
+
+            # h b P 2
+            # h b G 1 N 1 L 1   (pairs)
+
+            if len(t) < 4 or t[1] not in ("b", "w") or (len(t) - 2) % 2 != 0:
+                print("形式: h b P 2   / h w R 1   / h b G 1 N 1 L 1")
                 continue
+
             color = "B" if t[1] == "b" else "W"
-            kind = t[2].upper()
-            if kind not in PIECE_JP or kind == "K":
-                print("持ち駒は P L N S G B R のみ")
-                continue
+            pairs = t[2:]
+
+            snap = pos.clone_state()
             try:
-                n = int(t[3])
-                if n < 0:
-                    raise ValueError
-                pos.set_hand(color, kind, n)
+                for kind_str, n_str in zip(pairs[0::2], pairs[1::2]):
+                    kind = kind_str.upper()
+                    if kind not in PIECE_JP or kind == "K":
+                        raise ValueError("持ち駒は P L N S G B R のみ")
+                    n = int(n_str)
+                    if n < 0:
+                        raise ValueError("枚数は 0以上の整数")
+                    pos.set_hand(color, kind, n)
                 print("OK")
-            except:
-                print("枚数は 0以上の整数")
+            except Exception as e:
+                # atomic rollback
+                pos.board, pos.hands, pos.side_to_move, pos.moves = snap
+                print(f"エラー: {e}")
             continue
 
         # start snapshot
