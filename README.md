@@ -1,73 +1,31 @@
-# kif-tsume-cui-solver
+# 将棋 KIF 入力 TUI
 
-詰将棋向けの CUI ツールです。
-
-- KIF形式の詰将棋を読み込み
-- python-shogi を用いた詰探索
-- 解答筋を ANKIF 互換 KIF として出力
-- 既存KIFの分岐（変化）を分割・整理
-
-## Requirements
-
-- Python 3.10+
-- python-shogi（任意・あると解探索が有効）
-
-```bash
-pip install python-shogi
-
+Textual を用いた、将棋局面編集・指し手入力用の TUI アプリケーションです。  
+KIF 作成前の「入力・確認・修正」を快適に行うことを目的としています。
 
 ---
 
-### ③ ディレクトリ構成（← これが一番価値あります）
+## 特徴
 
-```md
-## Project Structure
+- Textual ベースの TUI
+- vim 風 NORMAL / INPUT モード
+- 盤面カーソル操作
+- 駒配置（p コマンド）
+- 数字指し手入力（例: 7776）
+- undo / clear / start / sfen / kif
+- **自動 smoke テスト基盤（再現可能）**
 
-kif_tsume_cui_solver.py # CLI / エントリポイント
-constants.py # 定数
-models.py # データモデル
-position.py # ShogiPosition（局面管理）
-helpers.py # 汎用ヘルパー
-kif_format.py # KIF生成
-kif_parser.py # KIF解析
-solver_core.py # 詰探索ロジック
-batch_runner.py # batch処理
-sfen.py # SFEN生成
-help_texts.py # HELP文言
-tests/ # pytest
-INPUT/ # 入力KIF
-OUTPUT/ # 出力KIF
+---
+## 設計メモ
 
-## Usage
-
-### 単体起動
-```bash
-python kif_tsume_cui_solver.py
-
-batch INPUT 9
-- INPUT 内の KIF を 9手詰で一括処理
-- 解答筋ごとに OUTPUT に KIF を生成
-
+- 状態管理は `ShogiPosition` に集約
+- TUI は「状態を表示するだけ」に近づける
+- 操作の正否は **必ずログに出す**
+- smoke test は「仕様の生きたドキュメント」
 
 ---
 
-### ⑤ テスト
-
-```md
-## Tests
+## 起動方法
 
 ```bash
-pytest
-
-
----
-
-### ⑥ 設計方針（← 書いておくと未来の自分が泣いて喜ぶ）
-
-```md
-## Design Notes
-
-- 責務ごとにモジュールを分離
-- solver / parser / formatter / position を明確に分割
-- pytest により「安心して壊せる」構成を維持
-- 詰将棋用途に特化し、最小合法性のみを実装
+python tui_app.py
