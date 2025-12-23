@@ -6,7 +6,6 @@ EXPECT [STATE]
 # --- モード遷移（EscでNORMAL）---
 KEY escape
 WAIT 30
-# カーソル移動（描画更新も含めて確認したいなら DUMP_BOARD を挟む）
 DUMP_BOARD
 KEY j
 WAIT 30
@@ -25,7 +24,6 @@ EXPECT [SFEN]
 CMD clear
 EXPECT [OK]
 CMD undo
-# undoが「戻せない」なら、その旨のログでもOK（ここは後でルール化）
 DUMP_SFEN
 
 # --- 駒配置（pコマンド：大文字小文字・v・成り）---
@@ -35,11 +33,14 @@ CMD p 53 +P
 CMD p 52 v+R
 DUMP_BOARD
 CMD sfen
+EXPECT [SFEN]
 
-# --- 持駒設定（h/H衝突確認も含む：ここはあなたの方針に合わせる）---
-#CMD h b G 1    # 未実装（将来対応）
-#CMD h w R 2
-#DUMP_BOARD
+# --- 持駒設定（テキストコマンド）---
+CMD h b G 1
+EXPECT [OK]
+CMD h w R 2
+EXPECT [OK]
+DUMP_BOARD
 
 # --- 指し手（数字）---
 # 成功ケース（初期局面）
@@ -71,13 +72,12 @@ EXPECT [OK]
 CMD p 76 P
 EXPECT [OK]
 CMD h b P 1
-EXPECT [OK]    # ← h を仮実装していないならコメントアウト
+EXPECT [OK]
 KEY i
 CMD 076
 EXPECT [OK]
 DUMP_BOARD
 DUMP_SFEN
-
 
 # --- KIF ---
 CMD kif

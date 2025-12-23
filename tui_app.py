@@ -2,16 +2,17 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
+import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple, Dict, Any
-import re
+from typing import Optional, Tuple, Dict
 
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.events import Resize, Key
+from textual.events import Key
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Static, Input, RichLog
@@ -29,7 +30,7 @@ Square = Tuple[int, int]
 
 
 def _cell_str(pos: ShogiPosition, f: int, r: int) -> str:
-    """盤面セルの文字列（2文字想定：' ・' / ' 歩' / 'v歩' / 'v竜' など）"""
+    """盤面セルの表示（2文字幅想定：' ・' / ' 歩' / 'v歩' / 'v竜' など）"""
     p = pos.board.get((f, r))
     if p is None:
         return " ・"
@@ -61,8 +62,6 @@ def _format_hand(pos: ShogiPosition, color: str) -> str:
             parts.append(f"{PIECE_JP[k]}{n}")
     return " ".join(parts) if parts else "なし"
 
-
-# ----------------- Piece token parsing -----------------
 
 def parse_piece_token(tok: str) -> Optional[Piece]:
     """
@@ -104,6 +103,8 @@ class Cursor:
 
 
 class BoardView(Static):
+    """盤面表示（カーソル位置は reverse でハイライト）"""
+
     def __init__(self, tui: "ShogiTui"):
         super().__init__()
         self.tui = tui
@@ -119,7 +120,6 @@ class BoardView(Static):
             for f in range(9, 0, -1):
                 cell = _cell_str(pos, f, r)
                 if (f, r) == (cur.file, cur.rank):
-                    # カーソル位置を反転表示
                     row.append(Text(cell, style="reverse"))
                 else:
                     row.append(Text(cell))
@@ -140,7 +140,55 @@ class KifViewer(ModalScreen[None]):
 
     async def on_key(self, event: Key) -> None:
         if event.key == "escape":
+            event.stop()
             self.dismiss(None)
+
+
+class HandPicker(ModalScreen[Optional[Tuple[str, str, int]]]):
+    """
+    持駒ピッカー（UI）
+    入力形式:  b|w  KIND  N
+      例: b P 1
+          w R 2
+    """
+
+    def compose(self) -> ComposeResult:
+        help_txt = (
+            "持駒ピッカー\n"
+            "  形式: b|w <駒> <枚数>\n"
+            "  例: b P 1   /   w R 2\n"
+            "  駒: P L N S G B R K\n"
+            "  Enter: 決定 / Esc: キャンセル\n"
+        )
+        yield Vertical(
+            Static(help_txt),
+            Input(placeholder="例: b P 1", id="hand"),
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#hand", Input).focus()
+
+    async def on_key(self, event: Key) -> None:
+        if event.key in ("escape", "q"):
+            event.stop()
+            self.dismiss(None)
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        # ★重要：Enterが親に漏れると「勝手に別処理」が走るので必ず止める
+        event.stop()
+
+        s = event.value.strip()
+        m = re.fullmatch(r"(b|w)\s+([PLNSGBRK])\s+(\d+)", s, re.IGNORECASE)
+        if not m:
+            # 不正入力なら閉じずに続行（メッセージ大量発生の原因にもなる）
+            self.query_one("#hand", Input).value = s
+            return
+
+        side = m.group(1).lower()
+        kind = m.group(2).upper()
+        n = int(m.group(3))
+        color = "B" if side == "b" else "W"
+        self.dismiss((color, kind, n))
 
 
 # ----------------- main app -----------------
@@ -159,10 +207,15 @@ class ShogiTui(App):
         Binding("q", "quit", "quit", show=False),
         Binding("i", "enter_input", "input", show=False),
         Binding("escape", "leave_input", "normal", show=False),
+
+        # vim風カーソル移動（NORMALのみ）
         Binding("h", "left", "left", show=False),
         Binding("j", "down", "down", show=False),
         Binding("k", "up", "up", show=False),
         Binding("l", "right", "right", show=False),
+
+        # 持駒ピッカー（衝突回避で大文字）
+        Binding("H", "open_hand_picker", "hand", show=False),
     ]
 
     mode = reactive(Mode.NORMAL)
@@ -171,8 +224,8 @@ class ShogiTui(App):
         super().__init__()
         self.pos = ShogiPosition()
         self.cursor = Cursor()
-        self.board_view = BoardView(self)
 
+        self.board_view = BoardView(self)
         self.cmd_input: Optional[Input] = None
         self.log_widget: Optional[RichLog] = None
 
@@ -261,12 +314,39 @@ class ShogiTui(App):
         self.cursor.rank = min(9, self.cursor.rank + 1)
         self.board_view.refresh()
 
+    # --- hand picker (UI) ---
+    def action_open_hand_picker(self) -> None:
+        """持駒ピッカーを開く（Textual版差に強い callback 方式）"""
+        try:
+            self.push_screen(HandPicker(), self._on_hand_picker_done)
+        except Exception as e:
+            self.log_err(f"持駒ピッカー失敗: {e}")
+
+    # ---- call back of hand picker ---
+    def _on_hand_picker_done(self, res) -> None:
+        """HandPicker.dismiss(...) の結果を受け取る"""
+        try:
+            if res is None:
+                return
+
+            color, kind, n = res
+
+            if not hasattr(self.pos, "hands") or not isinstance(self.pos.hands, dict):
+                raise ValueError("pos.hands が見つかりません")
+
+            if color not in self.pos.hands:
+                self.pos.hands[color] = {}
+            self.pos.hands[color][kind] = int(n)
+
+            self.log_ok(f"持駒設定(UI): {color} {kind} {n}")
+            self.board_view.refresh()
+
+        except Exception as e:
+            self.log_err(f"持駒ピッカー後処理失敗: {e}")
+
+
     # ---- KIF (A: 簡易) ----
     def _generate_kif_text(self) -> str:
-        """入力作業中の確認用：簡易KIF（A）。
-
-        最終的な「完全KIFエクスポート（B）」は、別コマンドとして拡張予定。
-        """
         out: list[str] = []
         out.append("手合割：平手")
         out.append("先手：")
@@ -285,7 +365,7 @@ class ShogiTui(App):
         out.append(f"まで{len(self.pos.moves)}手")
         return "\n".join(out)
 
-    # ---- Command input (クラス内メソッドとして動作させる) ----
+    # ---- Command input ----
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         line = event.value.strip()
         event.input.value = ""
@@ -293,7 +373,6 @@ class ShogiTui(App):
         if not line:
             return
 
-        # 入力内容はログに残す（契約外、デバッグ用）
         self._log(f"> {line}")
 
         # --- numeric move input ---
@@ -301,7 +380,6 @@ class ShogiTui(App):
             try:
                 tag, kind, frm, to, promote = self.pos.parse_numeric(line)
 
-                # drop picker はここでは省略（既存設計に合わせる）
                 if tag == "drop_pick":
                     cands = self.pos.drop_candidates(to)
                     if not cands:
@@ -313,7 +391,6 @@ class ShogiTui(App):
                         return
                     raise ValueError("複数候補の打ち分けは未対応（smokeでは1候補前提）")
 
-                # normal move
                 p = self.pos.board.get(frm)
                 if p is None:
                     raise ValueError("移動元に駒がありません")
@@ -336,12 +413,13 @@ class ShogiTui(App):
             return
 
         if cmd in ("q", "quit", "exit"):
-            self.log_err("INPUT中の q は終了しません。:q を入力してください（または Ctrl+C）")
+            self.log_err("INPUT中の q は終了しません。:q を入力してください")
             return
 
         if cmd in ("help", "?"):
-            self._log("[HINT] Commands: show | start | sfen | load <SFEN> | clear | undo | kif | help/? | :q")
+            self._log("[HINT] Commands: show | start | sfen | load <SFEN> | clear | undo | kif | h <b|w> <KIND> <N> | help/? | :q")
             self._log("[HINT] Moves: 7776 (move) / 77761 (promote) / 076 (drop: 0+file+rank)")
+            self._log("[HINT] Hand UI: press 'H'")
             return
 
         if cmd == "show":
@@ -391,6 +469,32 @@ class ShogiTui(App):
                 self.pos._history = []
                 self.log_ok("SFENを読み込みました")
                 self.board_view.refresh()
+            except Exception as e:
+                self.log_err(str(e))
+            return
+
+        # ★追加：持駒設定（テキストコマンド：smoke用/CLI用）
+        # 形式: h b P 1 / h w R 2
+        if cmd == "h":
+            try:
+                m = re.fullmatch(r"(b|w)\s+([PLNSGBRK])\s+(\d+)", arg.strip(), re.IGNORECASE)
+                if not m:
+                    raise ValueError("使い方: h <b|w> <KIND> <N>   例: h b P 1 / h w R 2")
+                side = m.group(1).lower()
+                kind = m.group(2).upper()
+                n = int(m.group(3))
+                color = "B" if side == "b" else "W"
+
+                if not hasattr(self.pos, "hands") or not isinstance(self.pos.hands, dict):
+                    raise ValueError("pos.hands が見つかりません")
+
+                if color not in self.pos.hands:
+                    self.pos.hands[color] = {}
+                self.pos.hands[color][kind] = n
+
+                self.log_ok(f"持駒設定: {color} {kind} {n}")
+                self.board_view.refresh()
+
             except Exception as e:
                 self.log_err(str(e))
             return
