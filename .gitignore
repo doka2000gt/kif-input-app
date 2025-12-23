@@ -8,3 +8,5 @@ OUTPUT/
 *.pos
 *.patch
 others/
+*.log
+*.jsonl

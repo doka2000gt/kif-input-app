@@ -1,0 +1,62 @@
+# --- 起動チェック ---
+WAIT 50
+CMD show
+EXPECT 状態
+
+# --- モード遷移（EscでNORMAL）---
+KEY escape
+WAIT 30
+# カーソル移動（描画更新も含めて確認したいなら DUMP_BOARD を挟む）
+DUMP_BOARD
+KEY j
+WAIT 30
+DUMP_BOARD
+KEY l
+WAIT 30
+DUMP_BOARD
+
+# --- start / sfen / clear / undo の基本 ---
+KEY i
+WAIT 30
+CMD start
+EXPECT OK
+CMD sfen
+EXPECT SFEN
+CMD clear
+EXPECT クリア
+CMD undo
+# undoが「戻せない」なら、その旨のログでもOK（ここは後でルール化）
+DUMP_SFEN
+
+# --- 駒配置（pコマンド：大文字小文字・v・成り）---
+CMD p 55 P
+CMD p 54 vP
+CMD p 53 +P
+CMD p 52 v+R
+DUMP_BOARD
+CMD sfen
+
+# --- 持駒設定（h/H衝突確認も含む：ここはあなたの方針に合わせる）---
+CMD h b G 1
+CMD h w R 2
+DUMP_BOARD
+
+# --- 指し手（数字）---
+CMD start
+CMD 7776
+CMD 3334
+CMD undo
+DUMP_SFEN
+
+# --- 打ち（候補1つ／複数候補）---
+# 例：先に持駒を作ってから 076（0+行+段）
+CMD clear
+CMD p 55 K
+CMD h b P 1
+CMD 076
+DUMP_BOARD
+DUMP_SFEN
+
+# --- KIF ---
+CMD kif
+EXPECT KIF
