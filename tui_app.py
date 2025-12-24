@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import asyncio
+import os
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -144,25 +144,46 @@ class KifViewer(ModalScreen[None]):
             self.dismiss(None)
 
 
-class HandPicker(ModalScreen[Optional[Tuple[str, str, int]]]):
+class HandPicker(ModalScreen[Optional[list[Tuple[str, str, int]]]]):
     """
-    持駒ピッカー（UI）
-    入力形式:  b|w  KIND  N
-      例: b P 1
-          w R 2
+    持駒ピッカー（UI）: 複数行入力対応 / 編集モードでは b 省略可 / 枚数チェックあり
+
+    入力例（編集モード=先手固定）:
+      P1
+      G 1
+      R2
+
+    入力例（明示）:
+      bP1
+      b G 1
+      wR2
+
+    区切り:
+      - 改行 / ';' / ','
+
+    制約:
+      - 枚数は 1〜18（0は禁止）
     """
+
+    MAX_HAND = 18
+
+    def __init__(self, in_setup: bool):
+        super().__init__()
+        self.in_setup = in_setup  # Trueなら b省略可（省略時はB扱い）
 
     def compose(self) -> ComposeResult:
         help_txt = (
-            "持駒ピッカー\n"
-            "  形式: b|w <駒> <枚数>\n"
-            "  例: b P 1   /   w R 2\n"
+            "持駒ピッカー（複数入力OK）\n"
+            "  1項目: [b|w]<駒><枚数>  または  <駒><枚数>\n"
+            "  ※スペースは省略可（例: P1 / bP1 / wR2）\n"
+            "  区切り: 改行 / ; / ,\n"
+            f"  枚数: 1〜{self.MAX_HAND}（0は禁止）\n"
             "  駒: P L N S G B R K\n"
-            "  Enter: 決定 / Esc: キャンセル\n"
+            "  Enter: 決定 / Esc(q): キャンセル\n"
         )
         yield Vertical(
             Static(help_txt),
-            Input(placeholder="例: b P 1", id="hand"),
+            Input(placeholder="例: P1; G1; R2", id="hand"),
         )
 
     def on_mount(self) -> None:
@@ -173,22 +194,446 @@ class HandPicker(ModalScreen[Optional[Tuple[str, str, int]]]):
             event.stop()
             self.dismiss(None)
 
+    def _validate_n(self, n: int) -> None:
+        if n <= 0:
+            raise ValueError("枚数 0 は指定できません（1以上にしてください）")
+        if n > self.MAX_HAND:
+            raise ValueError(f"枚数が大きすぎます（上限 {self.MAX_HAND}）")
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        # ★重要：Enterが親に漏れると「勝手に別処理」が走るので必ず止める
         event.stop()
 
-        s = event.value.strip()
-        m = re.fullmatch(r"(b|w)\s+([PLNSGBRK])\s+(\d+)", s, re.IGNORECASE)
-        if not m:
-            # 不正入力なら閉じずに続行（メッセージ大量発生の原因にもなる）
-            self.query_one("#hand", Input).value = s
+        raw = event.value.strip()
+        if not raw:
             return
 
-        side = m.group(1).lower()
-        kind = m.group(2).upper()
-        n = int(m.group(3))
-        color = "B" if side == "b" else "W"
-        self.dismiss((color, kind, n))
+        # 改行入力がしにくい環境向け： ; , も改行扱いに
+        raw = raw.replace(",", "\n").replace(";", "\n")
+
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        parsed: list[Tuple[str, str, int]] = []
+
+        try:
+            for ln in lines:
+                # 形式: bP1 / b P 1 / wR2 / P1 / P 1
+                m3 = re.fullmatch(r"(b|w)\s*([PLNSGBRK])\s*(\d+)", ln, re.IGNORECASE)
+                m2 = re.fullmatch(r"([PLNSGBRK])\s*(\d+)", ln, re.IGNORECASE)
+
+                if m3:
+                    side = m3.group(1).lower()
+                    kind = m3.group(2).upper()
+                    n = int(m3.group(3))
+                    self._validate_n(n)
+                    color = "B" if side == "b" else "W"
+                    parsed.append((color, kind, n))
+                    continue
+
+                if m2:
+                    kind = m2.group(1).upper()
+                    n = int(m2.group(2))
+                    self._validate_n(n)
+                    if self.in_setup:
+                        parsed.append(("B", kind, n))  # 編集モードは先手固定
+                    else:
+                        raise ValueError("対局モードでは b/w を付けてください（例: bP1）")
+                    continue
+
+                # ここまで来たらパース失敗
+                raise ValueError(f"形式が不正です: '{ln}'（例: P1 / bP1 / wR2）")
+
+        except Exception as e:
+            # 不正入力は閉じずに、そのまま残して修正できるようにする
+            # （最後に問題になった行だけ入力欄へ戻すと直しやすい）
+            self.query_one("#hand", Input).value = raw
+            # 画面右ログに出したい場合は app.log_err を呼ぶ
+            try:
+                app = self.app  # type: ignore
+                if hasattr(app, "log_err"):
+                    app.log_err(f"持駒入力エラー: {e}")
+            except Exception:
+                pass
+            return
+
+        self.dismiss(parsed)
+
+
+class DropPicker(ModalScreen[Optional[str]]):
+    """
+    打ちの複数候補選択（UI）
+    - j/k, ↑/↓ で選択
+    - Enter で確定
+    - Esc/q でキャンセル
+    - 直接 'P' などを押して即決も可
+    """
+
+    selected: int = reactive(0)
+
+    def __init__(self, to_sq: Square, candidates: list[str]):
+        super().__init__()
+        self.to_sq = to_sq
+        # 表示は固定順に寄せる（よく使う順）
+        order = ["R", "B", "G", "S", "N", "L", "P", "K"]
+        self.candidates = [k for k in order if k in candidates] + [k for k in candidates if k not in order]
+        if not self.candidates:
+            self.candidates = candidates[:]
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static("", id="drop_menu"),
+            Static("j/k(↑/↓):選択  Enter:決定  Esc(q):キャンセル  直接P等でも可", id="drop_help"),
+        )
+
+    def on_mount(self) -> None:
+        self.set_focus(self)
+        self._refresh_menu()
+        self._refresh_panel()
+
+    def watch_selected(self, _: int) -> None:
+        self._refresh_menu()
+
+    def _refresh_menu(self) -> None:
+        menu = Text()
+        menu.append("打ち候補が複数あります。どの駒を打ちますか？\n")
+        menu.append(f"  行先: {self.to_sq}\n\n")
+        for i, k in enumerate(self.candidates):
+            mark = "▶" if i == self.selected else " "
+            menu.append(f"{mark} {k} : {PIECE_JP[k]}\n")
+        self.query_one("#drop_menu", Static).update(menu)
+
+    async def on_key(self, event: Key) -> None:
+        k = event.key
+
+        if k in ("escape", "q"):
+            event.stop()
+            self.dismiss(None)
+            return
+
+        if k in ("j", "down"):
+            event.stop()
+            self.panel_index = (self.panel_index + 1) % len(self.panel_items)
+            self._refresh_all(sync=False)
+            return
+
+        if k in ("k", "up"):
+            event.stop()
+            self.panel_index = (self.panel_index - 1) % len(self.panel_items)
+            self._refresh_all(sync=False)
+            return
+
+        if k == "enter":
+            event.stop()
+            kind = self.panel_items[self.panel_index]
+            self._place(kind)
+            # _place() 側でリセットと refresh しているので、ここでは閉じるだけ
+            self.panel_open = False
+            self._refresh_all(sync=False)
+            return
+
+        if k in ("j", "down"):
+            event.stop()
+            if self.candidates:
+                self.selected = (self.selected + 1) % len(self.candidates)
+            return
+
+        if k in ("k", "up"):
+            event.stop()
+            if self.candidates:
+                self.selected = (self.selected - 1) % len(self.candidates)
+            return
+
+        if k == "enter":
+            event.stop()
+            if self.candidates:
+                self.dismiss(self.candidates[self.selected])
+            else:
+                self.dismiss(None)
+            return
+
+        # 直接入力（P/R/G...）でも選べる
+        if len(k) == 1 and re.fullmatch(r"[plnsgbrkPLNSGBRK]", k):
+            event.stop()
+            tok = k.upper()
+            if tok in self.candidates:
+                self.dismiss(tok)
+            return
+
+
+class PlacementMode(ModalScreen[None]):
+    """
+    連続配置モード（盤面編集用・盤面も表示する版）
+
+    操作:
+      - h/j/k/l または ←↓↑→ で盤面カーソル移動
+      - P/L/N/S/G/B/R/K で駒配置（※大文字推奨：h/l と衝突回避）
+      - v で先手/後手トグル
+      - + で成りトグル（P/L/N/S/B/Rに有効）
+      - . または Backspace/Delete で消去
+      - Esc / q で終了
+    """
+
+    selected: int = reactive(0)
+
+    def __init__(self, in_setup: bool):
+        super().__init__()
+        self.in_setup = in_setup
+        self.color = "B"       # 先手/後手
+        self.prom_next = False # 次の1回だけ成り
+        self.last_kind: Optional[str] = None  # 直近の駒（拾う/置く）
+        self.panel_open = False
+        self.panel_index = 0
+        self.panel_items = ["P", "L", "N", "S", "G", "B", "R", "K"]
+
+        # 画面内に盤面を持たせる（本体の board_view は使い回せないため別インスタンス）
+        self._board: Optional[BoardView] = None
+
+    def compose(self) -> ComposeResult:
+        yield Horizontal(
+            Vertical(
+                Static("連続配置モード", id="place_title"),
+                # 盤面（リアルタイム表示）
+                BoardView(self.app),  # type: ignore[arg-type]
+                id="place_left",
+            ),
+            Vertical(
+                Static("", id="place_help"),
+                Static("", id="piece_panel"),
+                id="place_right",
+            ),
+            id="place_root",
+        )
+
+    def on_mount(self) -> None:
+        self.set_focus(self)
+        # BoardView を取得して保持
+        self._board = self.query_one(BoardView)
+        self._refresh_help()
+        self._refresh_panel()
+        if self._board:
+            self._board.refresh()
+
+    def _refresh_help(self) -> None:
+        app: ShogiTui = self.app  # type: ignore
+        f, r = app.cursor.file, app.cursor.rank
+        side = "先手" if self.color == "B" else "後手"
+        prom = "成" if self.prom_next else "不成"
+        mode = "編集(先手固定)" if app.in_setup else "対局(手番交互)"
+
+        # 現在マスの駒情報
+        cur_piece = app.pos.board.get((f, r))
+        if cur_piece is None:
+            cur_txt = "空"
+        else:
+            cur_txt = f"{'後手' if cur_piece.color=='W' else '先手'}{'成' if cur_piece.prom else ''}{PIECE_JP[cur_piece.kind]}"
+        picked = (f"{PIECE_JP[self.last_kind]}" if self.last_kind else "なし")
+
+        t = Text()
+        t.append(f"連続配置モード  [{mode}]\n")
+        t.append(f"  位置: ({f},{r})  /  現在: {cur_txt}  /  直近: {picked}\n")
+        t.append(f"  配置側: {side}  /  次の成り: {prom}\n\n")
+        t.append("  移動: h/j/k/l または ←↓↑→\n")
+        t.append("  置く: P L N S G B R K（大文字推奨）\n")
+        t.append("  先後: v でトグル / 成り: + でトグル\n")
+        t.append("  消去: . / Backspace / Delete\n")
+        t.append("  終了: Esc / q\n")
+        self.query_one("#place_help", Static).update(t)
+
+    def _refresh_panel(self) -> None:
+        panel = Text()
+        if not self.panel_open:
+            panel.append("Tab: 駒パネルを開く\n")
+            self.query_one("#piece_panel", Static).update(panel)
+            return
+
+        panel.append("駒パネル（j/k, ↑/↓ で選択 / Enterで配置 / Tab・Escで閉じる）\n\n")
+        for i, k in enumerate(self.panel_items):
+            mark = "▶" if i == self.panel_index else " "
+            panel.append(f"{mark} {k} : {PIECE_JP[k]}\n")
+
+        self.query_one("#piece_panel", Static).update(panel)
+
+    def _refresh_all(self, sync: bool = True) -> None:
+        # sync=True のときだけ同期（空マスでv/+を押した直後は保持したい）
+        if sync:
+            self._sync_from_square()
+
+        if self._board:
+            self._board.refresh()
+        self._refresh_help()
+        self._refresh_panel()
+
+    def _place(self, kind: str) -> None:
+        app: ShogiTui = self.app  # type: ignore
+        f, r = app.cursor.file, app.cursor.rank
+
+        can_promote = kind in ("P", "L", "N", "S", "B", "R")
+        prom = self.prom_next and can_promote
+
+        app.pos.board[(f, r)] = Piece(color=self.color, kind=kind, prom=prom)
+
+        # 置いたら毎回リセット
+        self.last_kind = kind
+        self.color = "B"
+        self.prom_next = False
+
+        # 編集モード中は手番を先手固定（既存方針）
+        if hasattr(app, "_force_setup_side"):
+            app._force_setup_side()
+
+        app.log_ok(f"配置: {(f, r)} <- {'v' if self.color=='W' else ''}{'+' if prom else ''}{kind}")
+        self._refresh_all(sync=False)
+
+    def _clear_square(self) -> None:
+        app: ShogiTui = self.app  # type: ignore
+        f, r = app.cursor.file, app.cursor.rank
+        app.pos.board.pop((f, r), None)
+
+        if hasattr(app, "_force_setup_side"):
+            app._force_setup_side()
+
+        app.log_ok(f"消去: {(f, r)}")
+        self._refresh_all()
+
+    def _sync_from_square(self) -> None:
+        """カーソル位置の駒に合わせて編集状態を同期する（自動拾い）"""
+        app: ShogiTui = self.app  # type: ignore
+        f, r = app.cursor.file, app.cursor.rank
+        p = app.pos.board.get((f, r))
+
+        if p is None:
+            # 空マスならリセット値（あなたの方針）
+            self.color = "B"
+            self.prom_next = False
+            self.last_kind = None
+        else:
+            self.color = p.color
+            self.prom_next = bool(p.prom)
+            self.last_kind = p.kind
+
+    async def on_key(self, event: Key) -> None:
+        k = event.key
+        app: ShogiTui = self.app  # type: ignore
+
+        # 終了
+        if k in ("escape", "q"):
+            event.stop()
+            app.board_view.refresh()
+            self.dismiss(None)
+            return
+
+        # --- 駒パネルの開閉 ---
+        if k == "tab":
+            event.stop()
+            self.panel_open = not self.panel_open
+            if self.panel_open:
+                self.panel_index = 0
+            self._refresh_all(sync=False)
+            return
+
+        # --- パネルが開いている間は、j/k(↑/↓)/Enter をパネル操作に割り当て ---
+        if self.panel_open:
+            if k in ("escape", "q"):
+                event.stop()
+                self.panel_open = False
+                self._refresh_all(sync=False)
+                return
+
+            if k in ("j", "down"):
+                event.stop()
+                self.panel_index = (self.panel_index + 1) % len(self.panel_items)
+                self._refresh_all(sync=False)
+                return
+
+            if k in ("k", "up"):
+                event.stop()
+                self.panel_index = (self.panel_index - 1) % len(self.panel_items)
+                self._refresh_all(sync=False)
+                return
+
+            if k == "enter":
+                event.stop()
+                kind = self.panel_items[self.panel_index]
+                self._place(kind)
+                self.panel_open = False
+                self._refresh_all(sync=False)
+                return
+
+        # 移動（左右は action_left/right を直したのでそのまま使える）
+        if k in ("h", "left"):
+            event.stop()
+            app.action_left()
+            self._refresh_all()
+            return
+        if k in ("j", "down"):
+            event.stop()
+            app.action_down()
+            self._refresh_all()
+            return
+        if k in ("k", "up"):
+            event.stop()
+            app.action_up()
+            self._refresh_all()
+            return
+        if k in ("l", "right"):
+            event.stop()
+            app.action_right()
+            self._refresh_all()
+            return
+
+        # 消去
+        if k in (".", "backspace", "delete"):
+            event.stop()
+            self._clear_square()
+            return
+
+        # 先後トグル
+        if k == "v":
+            event.stop()
+            f, r = app.cursor.file, app.cursor.rank
+            p = app.pos.board.get((f, r))
+            if p is not None:
+                # 既存駒を直接編集
+                p.color = "W" if p.color == "B" else "B"
+                app.pos.board[(f, r)] = p
+                app.log_ok(f"編集: {(f, r)} の先後を反転しました")
+                if hasattr(app, "_force_setup_side"):
+                    app._force_setup_side()
+                self._refresh_all()
+            else:
+                # 空マスなら次の配置用トグル
+                self.color = "W" if self.color == "B" else "B"
+                self._refresh_all(sync=False)
+            return
+
+        # 成りトグル（環境差で "plus" になることがある）
+        if k in ("+", "plus"):
+            event.stop()
+            f, r = app.cursor.file, app.cursor.rank
+            p = app.pos.board.get((f, r))
+            if p is not None:
+                # 既存駒を直接編集（成れる駒だけ）
+                can_promote = p.kind in ("P", "L", "N", "S", "B", "R")
+                if not can_promote:
+                    app.log_err("この駒は成れません")
+                    self._refresh_all()
+                    return
+                p.prom = not p.prom
+                app.pos.board[(f, r)] = p
+                app.log_ok(f"編集: {(f, r)} の成/不成を反転しました")
+                if hasattr(app, "_force_setup_side"):
+                    app._force_setup_side()
+                self._refresh_all()
+            else:
+                # 空マスなら次の配置用トグル
+                self.prom_next = not self.prom_next
+                self._refresh_all(sync=False)
+            return
+
+        # 駒配置：大文字のみ（h/l衝突回避）
+        if len(k) == 1 and re.fullmatch(r"[PLNSGBRK]", k):
+            event.stop()
+            kind = k.upper()
+            self._place(kind)
+            return
 
 
 # ----------------- main app -----------------
@@ -216,6 +661,9 @@ class ShogiTui(App):
 
         # 持駒ピッカー（衝突回避で大文字）
         Binding("H", "open_hand_picker", "hand", show=False),
+
+        # 連続駒配置（衝突防止で大文字）
+        Binding("P", "open_place_mode", "place", show=False),
     ]
 
     mode = reactive(Mode.NORMAL)
@@ -224,6 +672,7 @@ class ShogiTui(App):
         super().__init__()
         self.pos = ShogiPosition()
         self.cursor = Cursor()
+        self.in_setup = True  # ★編集モード（startまで先手固定）
 
         self.board_view = BoardView(self)
         self.cmd_input: Optional[Input] = None
@@ -245,10 +694,16 @@ class ShogiTui(App):
             self.cmd_input.display = False
         self.board_view.refresh()
         self._set_title()
-        self.log_ok("起動しました")
+        self.log_ok("起動しました（編集モード：先手固定）")
 
     def _set_title(self) -> None:
-        self.title = f"将棋KIF入力TUI  [{self.mode.value}]"
+        suffix = "編集(先手固定)" if self.in_setup else "対局(手番交互)"
+        self.title = f"将棋KIF入力TUI  [{self.mode.value}]  [{suffix}]"
+
+    def _force_setup_side(self) -> None:
+        """編集モード中は常に先手番に戻す"""
+        if self.in_setup:
+            self.pos.side_to_move = "B"
 
     # --- logging helpers (smoke契約タグ) ---
     def _log(self, msg: str) -> None:
@@ -289,17 +744,25 @@ class ShogiTui(App):
     async def action_quit(self) -> None:
         await super().action_quit()
 
+    def action_open_place_mode(self) -> None:
+        """連続配置モードを開く"""
+        try:
+            self.push_screen(PlacementMode(self.in_setup))
+            self.log_state("連続配置モードを開始しました")
+        except Exception as e:
+            self.log_err(f"連続配置モード起動失敗: {e}")
+
     # --- cursor move actions ---
     def action_left(self) -> None:
         if self.mode != Mode.NORMAL:
             return
-        self.cursor.file = max(1, self.cursor.file - 1)
+        self.cursor.file = min(9, self.cursor.file + 1)
         self.board_view.refresh()
 
     def action_right(self) -> None:
         if self.mode != Mode.NORMAL:
             return
-        self.cursor.file = min(9, self.cursor.file + 1)
+        self.cursor.file = max(1, self.cursor.file - 1)
         self.board_view.refresh()
 
     def action_up(self) -> None:
@@ -316,34 +779,54 @@ class ShogiTui(App):
 
     # --- hand picker (UI) ---
     def action_open_hand_picker(self) -> None:
-        """持駒ピッカーを開く（Textual版差に強い callback 方式）"""
+        """持駒ピッカーを開く（callback方式）"""
         try:
-            self.push_screen(HandPicker(), self._on_hand_picker_done)
+            self.push_screen(HandPicker(self.in_setup), self._on_hand_picker_done)
         except Exception as e:
             self.log_err(f"持駒ピッカー失敗: {e}")
 
-    # ---- call back of hand picker ---
     def _on_hand_picker_done(self, res) -> None:
-        """HandPicker.dismiss(...) の結果を受け取る"""
         try:
             if res is None:
                 return
 
-            color, kind, n = res
-
             if not hasattr(self.pos, "hands") or not isinstance(self.pos.hands, dict):
                 raise ValueError("pos.hands が見つかりません")
 
-            if color not in self.pos.hands:
-                self.pos.hands[color] = {}
-            self.pos.hands[color][kind] = int(n)
+            # res: list[(color, kind, n)]
+            for (color, kind, n) in res:
+                if color not in self.pos.hands:
+                    self.pos.hands[color] = {}
+                self.pos.hands[color][kind] = int(n)
 
-            self.log_ok(f"持駒設定(UI): {color} {kind} {n}")
+            self.log_ok(f"持駒設定(UI): {len(res)}件")
+            self._force_setup_side()
+            self._set_title()
             self.board_view.refresh()
 
         except Exception as e:
             self.log_err(f"持駒ピッカー後処理失敗: {e}")
 
+
+    def _on_drop_picker_done(self, ctx, res) -> None:
+        try:
+            if res is None:
+                self.log_err("打ちをキャンセルしました")
+                return
+
+            to_sq = ctx["to"]
+            kind = res  # "P"など
+            self.pos.apply_move_minimal(kind, None, to_sq, False, True)
+
+            # ★編集モード中は手番を先手に固定
+            self._force_setup_side()
+
+            self.log_ok(f"drop {kind} -> {to_sq}")
+            self._set_title()
+            self.board_view.refresh()
+
+        except Exception as e:
+            self.log_err(f"打ちの適用に失敗: {e}")
 
     # ---- KIF (A: 簡易) ----
     def _generate_kif_text(self) -> str:
@@ -380,22 +863,39 @@ class ShogiTui(App):
             try:
                 tag, kind, frm, to, promote = self.pos.parse_numeric(line)
 
+                # ---- drop ----
                 if tag == "drop_pick":
                     cands = self.pos.drop_candidates(to)
                     if not cands:
                         raise ValueError("打てる持ち駒がありません（またはそのマスに駒があります）")
+
                     if len(cands) == 1:
                         self.pos.apply_move_minimal(cands[0], None, to, False, True)
+                        self._force_setup_side()
                         self.log_ok(f"drop {cands[0]} -> {to}")
+                        self._set_title()
                         self.board_view.refresh()
                         return
-                    raise ValueError("複数候補の打ち分けは未対応（smokeでは1候補前提）")
 
+                    if os.environ.get("SMOKE") == "1":
+                        raise ValueError("複数候補の打ち分けは未対応（SMOKE中）")
+
+                    ctx = {"to": to, "cands": cands}
+                    self.push_screen(DropPicker(to, cands), lambda res: self._on_drop_picker_done(ctx, res))
+                    self.log_state(f"打ち候補選択: to={to}, cands={cands}")
+                    return
+
+                # ---- normal move ----
                 p = self.pos.board.get(frm)
                 if p is None:
                     raise ValueError("移動元に駒がありません")
                 self.pos.apply_move_minimal(p.kind, frm, to, promote, False)
+
+                # ★編集モード中は手番を先手に固定
+                self._force_setup_side()
+
                 self.log_ok(f"move {frm}->{to}{' promote' if promote else ''}")
+                self._set_title()
                 self.board_view.refresh()
                 return
 
@@ -420,6 +920,7 @@ class ShogiTui(App):
             self._log("[HINT] Commands: show | start | sfen | load <SFEN> | clear | undo | kif | h <b|w> <KIND> <N> | help/? | :q")
             self._log("[HINT] Moves: 7776 (move) / 77761 (promote) / 076 (drop: 0+file+rank)")
             self._log("[HINT] Hand UI: press 'H'")
+            self._log("[HINT] Setup mode: startまで先手固定（連続で配置できます）")
             return
 
         if cmd == "show":
@@ -432,7 +933,9 @@ class ShogiTui(App):
                 snap = sfen_to_snapshot(start_sfen)
                 self.pos.board, self.pos.hands, self.pos.side_to_move, self.pos.moves = snap
                 self.pos._history = []
-                self.log_ok("初期局面を読み込みました")
+                self.in_setup = False
+                self._set_title()
+                self.log_ok("初期局面を読み込みました（対局モード：手番交互）")
                 self.board_view.refresh()
             except Exception as e:
                 self.log_err(str(e))
@@ -440,14 +943,19 @@ class ShogiTui(App):
 
         if cmd == "clear":
             self.pos.clear_all()
-            self.log_ok("盤面・持駒・手順をクリアしました")
+            self.in_setup = True
+            self._force_setup_side()
+            self._set_title()
+            self.log_ok("盤面・持駒・手順をクリアしました（編集モード：先手固定）")
             self.board_view.refresh()
             return
 
         if cmd == "undo":
             try:
                 self.pos.undo()
+                self._force_setup_side()
                 self.log_ok("undo")
+                self._set_title()
                 self.board_view.refresh()
             except Exception as e:
                 self.log_err(str(e))
@@ -467,14 +975,17 @@ class ShogiTui(App):
                 snap = sfen_to_snapshot(arg)
                 self.pos.board, self.pos.hands, self.pos.side_to_move, self.pos.moves = snap
                 self.pos._history = []
-                self.log_ok("SFENを読み込みました")
+                # SFEN読込は「局面編集」とみなす（startで対局へ）
+                self.in_setup = True
+                self._force_setup_side()
+                self._set_title()
+                self.log_ok("SFENを読み込みました（編集モード：先手固定）")
                 self.board_view.refresh()
             except Exception as e:
                 self.log_err(str(e))
             return
 
-        # ★追加：持駒設定（テキストコマンド：smoke用/CLI用）
-        # 形式: h b P 1 / h w R 2
+        # ★持駒設定（テキストコマンド：smoke用/CLI用）
         if cmd == "h":
             try:
                 m = re.fullmatch(r"(b|w)\s+([PLNSGBRK])\s+(\d+)", arg.strip(), re.IGNORECASE)
@@ -493,6 +1004,8 @@ class ShogiTui(App):
                 self.pos.hands[color][kind] = n
 
                 self.log_ok(f"持駒設定: {color} {kind} {n}")
+                self._force_setup_side()
+                self._set_title()
                 self.board_view.refresh()
 
             except Exception as e:
